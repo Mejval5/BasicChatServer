@@ -1,0 +1,5 @@
+(nick "adam")
+(join "#ch")
+(message "#ch" "ahoj")
+(message "#ch" "kkt")
+(replay "#ch" 1)

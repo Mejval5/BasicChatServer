@@ -1,0 +1,2 @@
+import chatserv
+nick foo

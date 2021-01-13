@@ -1,0 +1,69 @@
+Write a simple chat server that accepts connections on a UNIX domain
+socket, which it should create in its working directory with the
+name ‹chatsock›. It should implement a simple protocol with the
+command types described below. Each command is an expression of the
+lisp-like language described in hw3. In the direction from client to
+server:
+
+    (nick "{nickname}")
+    (join "{channel}")
+    (message "{channel}" "{text}")
+    (part "{channel}")
+    (replay "{channel}" {unix timestamp})
+
+And in the opposite direction:
+
+    (ok)
+    (error "{text}")
+    (message "{channel}" {unix timestamp} "{nickname}" "{text}")
+
+Both ‹{nickname}› and ‹{channel}› are alphanumeric strings without
+spaces, the latter must start with a ‹#› while the former must not
+start with a ‹#›. Unix timestamp is an unsigned integer denoting the
+number of seconds elapsed since midnight, 1.1.1970. ‹{text}› is any
+utf-8 string with no newlines in it. The server should respond to
+unknown or malformed commands with an ‹error›.
+
+Upon connecting, the client sends the ‹nick› command. The server
+accepts it and replies ‹ok› unless the nickname is already in use by
+another connected client, in which case it replies ‹error›. It is
+also an ‹error› to send any other command before ‹nick› has been
+accepted.
+
+The ‹join› command associates the client which sent the command with
+the given channel. Joining an already-joined channel is an ‹error›.
+Channels are transparently created when the first client joins them,
+and are never destroyed. The ‹part› command removes the association
+of the client with the channel. It is an ‹error› to part a channel
+that is not joined. Both confirm the action with an ‹ok› if they
+succeed.
+
+The ‹message› command causes the given message to be broadcast to
+all users associated with the given channel, including the
+originator. There is no other reply from the server. However, if the
+target channel does not exist or the client is not currently
+associated with it, the server replies with an ‹error› and does not
+broadcast the message. The {nickname} in the ‹message› command
+broadcast by the server is that of the originator of the message,
+and the timestamp marks the moment when the server received the
+command from the sending client.
+
+Finally, the {replay} command causes the server to re-send all
+‹message›s that the given channel received since the given timestamp
+(i.e. with a timestamp that is greater or equal to the one given by
+the client). The server gives ‹ok› before resending any messages if
+the request was valid (even in the case that there are no matching
+messages). The command results in an ‹error› (and no message replay)
+in case the client is not associated with the channel, or if the
+timestamp is in the future according to the server clock.
+
+If the client sends multiple commands without waiting for replies,
+the replies from the server should come in the order of the commands
+received. Any ‹message› commands going from the server to the client
+are, however, asynchronous to the rest of the command stream,
+including ‹message› commands generated in response to a ‹replay›.
+
+The server must remain responsive at all times and to all clients,
+including during playback of long message histories in response to a
+‹replay› command.  It is strongly encouraged that you program the
+server in an async style, using the ‹asyncio› library.
