@@ -5,7 +5,7 @@ from lisp import *
 
 channels: Dict = dict()
 clients: Set = set()
-windows = False
+windows = True
 
 
 class Channel:
@@ -19,13 +19,10 @@ class Channel:
         if client not in self.clients:
             return False
         timestamp = int(time.time())
-        # parsed_msg = parse(f"(message \"{self.name}\" {timestamp} \"{client.nick}\" \"{message}\")")
-        # msg = f"(message {self.name} {timestamp} {client.nick} {message}"
         msg = f"(message \"{self.name}\" {timestamp} \"{client.nick}\" \"{message.value}\")"
         self.history.append((timestamp, f"\"{client.nick}\" \"{message.value}\""))
-        tasks = (c.send_message(msg) for c in clients if c in self.clients and c in clients)
+        tasks = (c.send_message(msg) for c in clients if c in self.clients)
         await asyncio.gather(*tasks)
-        return None
 
     async def replay(self, client, ts):
         if client not in self.clients:
@@ -34,20 +31,21 @@ class Channel:
         for msg in self.history:
             if msg[0] < ts:
                 continue
+            #await asyncio.sleep(10)
             await client.send_message(f"(message \"{self.name}\" \"{msg[0]}\" {msg[1]})")
-        return None
 
-    def add_client(self, client):
+    async def add_client(self, client):
         if client in self.clients:
-            return False
-        self.clients.add(client)
-        return True
+            await client.send_error("cannot add client")
+        else:
+            self.clients.add(client)
+            await client.send_ok()
 
-    def leave(self, client):
+    async def leave(self, client):
         if client not in self.clients:
-            return False
+            await client.send_error("client not in self.clients")
         self.clients.remove(client)
-        return True
+        await client.send_ok()
 
 
 def nickname_in_use(nick):
@@ -65,46 +63,79 @@ class Client:
         clients.add(self)
         self._drain_lock = asyncio.Lock()
 
-    def join(self, chan):
-        if type(chan) is not String:
-            return False
-        if not chan.value.startswith("#") or not chan.value[1:].isalnum():
-            return False
-        channel = channels.get(chan.value)
-        if channel is None:
-            channel = Channel(chan.value)
-        return channel.add_client(self)
+    async def join(self, rest):
+        if len(rest) != 1:
+            await self.send_error("len(rest) in join is not 1")
+            return
+        chan = rest[0]
+        if not type(chan) is String:
+            await self.send_error("chan is not string")
+        elif not chan.value.startswith("#") or not chan.value[1:].isalnum():
+            await self.send_error("chan does not start with #")
+        else:
+            channel = channels.get(chan.value)
+            if channel is None:
+                channel = Channel(chan.value)
+            await channel.add_client(self)
 
-    def leave(self, chan):
+    async def leave(self, rest):
+        if len(rest) != 1:
+            await self.send_error("len(rest) in leave function is not = 1")
+            return
+        chan = rest[0]
+        if not type(chan) is String:
+            await self.send_error("chan is not string")
         if chan.value not in channels:
-            return False
-        return channels[chan.value].leave(self)
+            await self.send_error("chan not in channels")
+        else:
+            await channels[chan.value].leave(self)
 
     async def message_all(self, rest):
         if len(rest) != 2:
-            return False
+            await self.send_error("rest is longer than 2")
+            return
         chan, message = rest[0], rest[1]
+        if not type(chan) is String or not type(message) is  String:
+            await self.send_error("chan or msg is not string")
+            return
         if chan.value not in channels:
-            return False
-        return await channels[chan.value].message(self, message)
+            await self.send_error("chan not in channels")
+            return
+        if self not in channels[chan.value].clients:
+            await self.send_error("you aint in this channel boy")
+            return
+        await channels[chan.value].message(self, message)
 
     async def replay_channel(self, rest):
+        if len(rest) != 2:
+            await self.send_error("len(rest) in replay function is not 2")
+            return
         chan, timestamp = rest[0], rest[1]
+        if not type(chan) is String or not type(timestamp) is Number:
+            await self.send_error("chan or timestamp are incorrect types")
+            return
         if chan.value not in channels:
-            return False
+            await self.send_error("chan not in channels")
+            return
+        if self not in channels[chan.value].clients:
+            await self.send_error("you aint in this channel boy")
+            return
         try:
             if int(timestamp.value) > time.time():
-                return False
+                await self.send_error("timestamp breaks temporality")
+                return
         except ValueError:
-            return False
-        return await channels[chan.value].replay(self, int(timestamp.value))
+            await self.send_error("ValueError")
+            return
+        await channels[chan.value].replay(self, int(timestamp.value))
+        
 
     async def send_ok(self):
         await self.send_message("(ok)")
 
     async def send_error(self, error=""):
         if error:
-            msg = f"(error {error})"
+            msg = f"(error \"{error}\")"
         else:
             msg = "(error)"
         await self.send_message(msg)
@@ -112,77 +143,85 @@ class Client:
     async def read_message(self) -> str:
         data = await self.reader.readline()
         if windows:
-            return data.decode().rstrip("\n").rstrip("\r")
+            return data.decode('windows-1252').rstrip("\n").rstrip("\r")
         else:
-            return data.decode().rstrip("\n")
+            return data.decode('utf-8').rstrip("\n")
 
     async def send_message(self, message):
         if windows:
-            self.writer.write(f"{message}\n\r".encode())
+            self.writer.write(f"{message}\n\r".encode(encoding='windows-1252'))
         else:
-            self.writer.write(f"{message}\n".encode())
+            self.writer.write(f"{message}\n".encode(encoding='utf-8'))
         async with self._drain_lock:
             await self.writer.drain()
 
-    async def send_nothing(self):
-        async with self._drain_lock:
-            await self.writer.drain()
-
-    def set_nick(self, nick):
+    def set_nick(self, rest):
+        if len(rest) != 1:
+            asyncio.create_task(self.send_error("len(rest is not 1"+str(rest)))
+            return False
+        nick = rest[0]
         if type(nick) is not String:
+            asyncio.create_task(self.send_error("nick is not string"))
             return False
         if not nick.value.isalnum() or nickname_in_use(nick.value):
+            asyncio.create_task(self.send_error("bick is not alnum"))
             return False
         if nick.value.startswith("#"):
+            asyncio.create_task(self.send_error("nick starts with #"))
             return False
         self.nick = nick.value
         return True
 
     async def setup_nick(self):
-        message = parse(await self.read_message())
+        try:
+            message = parse(await self.read_message())
+        except UnicodeDecodeError:
+            asyncio.create_task(self.send_error("bad bad unicode"))
+            return False
         if type(message) is not Compound:
-            await self.send_error("not compound") # TODO
+            asyncio.create_task(self.send_error("not compound")) # TODO
             return False
         if len(message._children) != 2:
-            await self.send_error("too many commands.")
+            asyncio.create_task(self.send_error("too few or many commands."))
             return False
-        cmd, nick = message._children[0], message._children[1]
-        if type(nick) is not String:
-            await self.send_error("nick is not string.")
+        cmd, rest = message._children[0], message._children[1:]
+        if type(cmd) is not Identifier:
+            asyncio.create_task(self.send_error("command not identifier."))
             return False
         if cmd.value != "nick":
-            await self.send_error("setup a nick first.")
+            asyncio.create_task(self.send_error("setup a nick first."))
             return False
-        if not self.set_nick(nick):
-            await self.send_error("choose an available nick.")
+        if not self.set_nick(rest):
             return False
-        await self.send_ok()
+        asyncio.create_task(self.send_ok())
         return True
 
     async def parse_cmd(self):
-        message = parse(await self.read_message())
+        try:
+            message = parse(await self.read_message())
+        except UnicodeDecodeError:
+            asyncio.create_task(self.send_error("bad bad unicode"))
+            return
         if type(message) is Compound:
             cmd, rest = message._children[0], message._children[1:]
-            if cmd.value == "join":
-                res = self.join(rest[0])
-            elif cmd.value == "nick":
-                res = self.set_nick(rest[0])
-            elif cmd.value == "part":
-                res = self.leave(rest[0])
-            elif cmd.value == "message":
-                res = await self.message_all(rest)
-            elif cmd.value == "replay":
-                res = await self.replay_channel(rest)
-            else:
-                res = False
-            if res is None:
-                await self.send_nothing()
-            elif res:
-                await self.send_ok()
-            elif not res:
-                await self.send_error()
-        else:
-            await self.send_error()
+            if type(cmd) is Identifier:
+                if cmd.value == "join":
+                    asyncio.create_task(self.join(rest))
+                    return
+                elif cmd.value == "nick":
+                    if self.set_nick(rest):
+                        asyncio.create_task(self.send_ok())
+                        return
+                elif cmd.value == "part":
+                    asyncio.create_task(self.leave(rest))
+                    return
+                elif cmd.value == "message":
+                    asyncio.create_task(self.message_all(rest))
+                    return
+                elif cmd.value == "replay":
+                    asyncio.create_task(self.replay_channel(rest))
+                    return
+        asyncio.create_task(self.send_error("parse cmd failed"))
 
 
 async def server(reader, writer):
@@ -198,11 +237,63 @@ async def server(reader, writer):
 
 async def main():
     if windows:
-        unix_server = await asyncio.start_server(server, '127.0.0.2', 9999)
+        unix_server = await asyncio.start_server(server, '192.168.0.104', 8888)
     else:
         unix_server = await asyncio.start_unix_server(server, './chatsock')
     async with unix_server:
-        await unix_server.serve_forever()
+        a = asyncio.create_task(unix_server.serve_forever())
+        b = asyncio.create_task(run_tests())
+        await a
+        await b
+
+
+        
+lock = asyncio.Lock()
+
+async def run_tests():
+    reader, writer = await asyncio.open_connection(host="192.168.0.104", port="8888")
+    
+    await tests(reader, writer)
+    
+
+async def read(reader):
+    return (await reader.readline()).decode('windows-1252').rstrip("\n").rstrip("\r")
+
+async def write(message, writer):
+    writer.write(message+"\n\r".encode(encoding='windows-1252'))
+    async with lock:
+        await writer.drain()
+
+
+async def tests(reader, writer):
+    await write("(nick \"foo\")", writer)
+    await _assert ("(ok)", reader)
+
+    await write("(nick \"foo\")", writer)
+    await _assert ("(error)", reader)
+
+    await write("(nick \"foo\")", writer)
+    await _assert ("(error)", reader)
+
+    await write("(nick \"bar\")", writer)
+    await _assert ("(ok)", reader)
+
+    await write("(nick \"bar\" \"awd\")", writer)
+    await _assert ("(error)", reader)
+
+    await write("((nick \"bar\"))", writer)
+    await _assert ("(error)", reader)
+
+    await write("(())", writer)
+    await _assert ("(error)", reader)
+
+    await write("()", writer)
+    await _assert ("(error)", reader)
+
+
+async def _assert(b, reader):
+    a = await read(reader)
+    print(a)
 
 
 asyncio.run(main())
